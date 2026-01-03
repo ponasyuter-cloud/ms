@@ -7,10 +7,9 @@ jobs:
     timeout-minutes: 3600
 
     steps:
-      - name: Configure Core RDP & Security Settings
+      - name: Disable Password Complexity Policy
         run: |
-          # --- DISABLE PASSWORD COMPLEXITY ---
-          # Ini wajib agar password "AgnzCleobelix" (tanpa angka/simbol) bisa diterima
+          # Langkah ini mematikan syarat password rumit agar tidak ada error InvalidPasswordException
           $secpol = "$env:TEMP\secpol.cfg"
           secedit /export /cfg $secpol
           (Get-Content $secpol) -replace "PasswordComplexity = 1", "PasswordComplexity = 0" | Set-Content $secpol
@@ -18,35 +17,36 @@ jobs:
           Remove-Item $secpol -Force
           Write-Host "Password complexity requirement disabled."
 
-          # --- RDP SETTINGS ---
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-            -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name "SecurityLayer" -Value 0 -Force
+      - name: Configure Core RDP Settings
+        run: |
+          # Enable Remote Desktop
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
           
           # Firewall rules
           netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
           
           Restart-Service -Name TermService -Force
 
       - name: Create RDP User with Static Credentials
         run: |
-          # USERNAME & PASSWORD TETAP
+          # --- USER & PASSWORD BARU ---
           $username = "Agnz"
-          $password = "AgnzCleobelix"
+          $password = "Celobelix@Agnz"
 
+          # Convert ke SecureString
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          
-          # Sekarang user bisa dibuat meski password hanya huruf
+
+          # Buat user baru
           New-LocalUser -Name $username -Password $securePass -AccountNeverExpires
-          
+
+          # Tambahkan ke grup Admin
           Add-LocalGroupMember -Group "Administrators" -Member $username
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username
 
+          # Simpan info ke environment variable untuk log nanti
           echo "RDP_USER=$username" >> $env:GITHUB_ENV
           echo "RDP_PASS=$password" >> $env:GITHUB_ENV
 
@@ -85,6 +85,7 @@ jobs:
         run: |
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
           $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          
           if (-not $testResult.TcpTestSucceeded) {
             Write-Error "TCP connection to RDP port 3389 failed"
             exit 1
