@@ -7,9 +7,18 @@ jobs:
     timeout-minutes: 3600
 
     steps:
-      - name: Configure Core RDP Settings
+      - name: Configure Core RDP & Security Settings
         run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
+          # --- DISABLE PASSWORD COMPLEXITY ---
+          # Ini wajib agar password "AgnzCleobelix" (tanpa angka/simbol) bisa diterima
+          $secpol = "$env:TEMP\secpol.cfg"
+          secedit /export /cfg $secpol
+          (Get-Content $secpol) -replace "PasswordComplexity = 1", "PasswordComplexity = 0" | Set-Content $secpol
+          secedit /configure /db c:\windows\security\local.sdb /cfg $secpol /areas SECURITYPOLICY
+          Remove-Item $secpol -Force
+          Write-Host "Password complexity requirement disabled."
+
+          # --- RDP SETTINGS ---
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
             -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
@@ -17,37 +26,30 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
             -Name "SecurityLayer" -Value 0 -Force
           
-          # Remove any existing rule with the same name to avoid duplication
+          # Firewall rules
           netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          
-          # For testing, allow any incoming connection on port 3389
           netsh advfirewall firewall add rule name="RDP-Tailscale" `
             dir=in action=allow protocol=TCP localport=3389
           
-          # (Optional) Restart the Remote Desktop service to ensure changes take effect
           Restart-Service -Name TermService -Force
 
       - name: Create RDP User with Static Credentials
         run: |
-          # --- KONFIGURASI USER DAN PASSWORD TETAP ---
+          # USERNAME & PASSWORD TETAP
           $username = "Agnz"
           $password = "AgnzCleobelix"
 
-          # Convert password to SecureString required by New-LocalUser
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-
-          # Create the user
+          
+          # Sekarang user bisa dibuat meski password hanya huruf
           New-LocalUser -Name $username -Password $securePass -AccountNeverExpires
-
-          # Add user to Administrators and Remote Desktop Users groups
+          
           Add-LocalGroupMember -Group "Administrators" -Member $username
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username
 
-          # Save credentials to Environment Variables for the final step display
           echo "RDP_USER=$username" >> $env:GITHUB_ENV
           echo "RDP_PASS=$password" >> $env:GITHUB_ENV
 
-          # Verify user creation
           if (-not (Get-LocalUser -Name $username)) {
             Write-Error "User creation failed"
             exit 1
@@ -63,10 +65,8 @@ jobs:
 
       - name: Establish Tailscale Connection
         run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
           
-          # Wait for Tailscale to assign an IP
           $tsIP = $null
           $retries = 0
           while (-not $tsIP -and $retries -lt 10) {
@@ -84,9 +84,7 @@ jobs:
       - name: Verify RDP Accessibility
         run: |
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
           $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          
           if (-not $testResult.TcpTestSucceeded) {
             Write-Error "TCP connection to RDP port 3389 failed"
             exit 1
@@ -101,7 +99,6 @@ jobs:
           Write-Host "Password: $env:RDP_PASS"
           Write-Host "==================`n"
           
-          # Keep runner active indefinitely (or until manually cancelled)
           while ($true) {
             Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
             Start-Sleep -Seconds 300
